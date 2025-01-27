@@ -1,13 +1,17 @@
 {-# OPTIONS_HADDOCK show-extensions #-}
+{-# OPTIONS_GHC -funbox-strict-fields #-}
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+
 
 -- | Module    :  CaseBi.Arr
--- Copyright   :  (c) OleksandrZhabenko 2020
+-- Copyright   :  (c) OleksandrZhabenko 2020-2023
 -- License     :  MIT
 -- Stability   :  Experimental
--- Maintainer  :  olexandr543@yahoo.com
+-- Maintainer  :  oleksandr.zhabenko@yahoo.com
 --
 -- A library that can be used as a @case ... of@ constuction analogue for the multiple @Ord a => a -> b@
 -- transformations and data representation. Uses 'Array' internally. If you use the module in GHCi, then, please,
@@ -28,9 +32,13 @@ for efficiency or other data representation
   , getBFstL'
 ) where
 
-import qualified Data.List as L (sortBy)
+import GHC.Base
+import GHC.Num
+import GHC.List (length)
+import Data.Tuple
+import qualified Data.List as L (sortOn)
 import GHC.Arr
-import Data.Ord (comparing)
+import GHC.Exts
 
 {- | The function that can be used instead of the 'case ... of' function
 @
@@ -49,28 +57,30 @@ it is provided here if you have precomputed the first two arguments or at least 
 you can reduce the needed amount of computations in the 'getBFst''.
 -}
 getBFst''
-  :: Ord a => (# Int, (a, b) #) -- ^ The first unboxed tuple of the index and the element of the array.
+  :: (Ord a, Ix i) => (# Int, (a, b) #) -- ^ The first unboxed tuple of the index and the element of the array.
   -> (# Int, (a, b) #) -- ^ The second unboxed tuple of the index and the element of the array.
   -> Array i (a, b) -- ^ The array of the pairs of the compared value and the result that is used in case the last argument is equal to the compared value.
   -> b -- ^ The default value that is used if no first element in the array tuples equals to the compared value.
   -> a -- ^ The compared value, well, the @main@ function argument, to which it is applied.
   -> b -- ^ The resulting branch value.
-getBFst'' (# i, k #) (# j, m #) arr def x
+getBFst'' (# (I# i#), k #) (# (I# j#), m #) arr def x
  | if x < fst k then True else x > fst m = def
- | otherwise = gBF3 (# i, k #) (# j, m #) arr def x
+ | otherwise = gBF3 (# i#, k #) (# j#, m #) arr def x
 {-# INLINE getBFst'' #-}
 
--- | The meaning of the arguments is the same as for 'getBFst'''. Is used internally in it.
-gBF3 :: Ord a => (# Int, (a, b) #) -> (# Int, (a, b) #) -> Array i (a, b) -> b -> a -> b
-gBF3 (# i, k #) (# j, m #) arr def x
- | j - i > 1 = let !n = (i + j) `quot` 2 in let !p = unsafeAt arr n in
+-- | The meaning of the arguments is the same as for 'getBFst'''. Is used internally in it. 
+gBF3 :: (Ord a, Ix i) => (# Int#, (a, b) #) -> (# Int#, (a, b) #) -> Array i (a, b) -> b -> a -> b
+gBF3 (# !i#, k #) (# !j#, m #) arr def x
+ | isTrue# ((j# -# i#) ># 1# ) = 
     case compare x (fst p) of
-     GT -> gBF3 (# n, p #) (# j, m #) arr def x
-     EQ -> snd p
-     _  -> gBF3 (# i, k #) (# n, p #) arr def x
+     GT -> gBF3 (# n#, p #) (# j#, m #) arr def x
+     LT  -> gBF3 (# i#, k #) (# n#, p #) arr def x
+     _ -> snd p
  | x == fst m = snd m
  | x == fst k = snd k
  | otherwise = def
+     where !n# = (i# +# j#) `quotInt#` 2#
+           !p = unsafeAt arr (I# n#)
 {-# INLINABLE gBF3 #-}
 
 -- | A generally written without extending variant of the 'getBFst'''.
@@ -102,7 +112,7 @@ getBFstLSorted' def xs = getBFst'' (# 0, k #) (# l, m #) arr def
 
 {- | If it is unknown whether the list argument is sorted in the ascending order by the first element in every
 tuple (or, definitely, it is not, speaking generally), then instead of
-@ \\def xs x -> getBFst' (def, listArray (0,length xs - 1) . sortBy (comparing fst) $ xs) x @
+@ \\def xs x -> getBFst' (def, listArray (0,length xs - 1) . sortOn fst $ xs) x @
 you can use this function.
 -}
 getBFstL'
@@ -112,7 +122,7 @@ getBFstL'
   -> b
 getBFstL' def xs = getBFst'' (# 0, k #) (# l, m #) arr def
   where !l = length xs - 1
-        !arr = listArray (0,l) . L.sortBy (comparing fst) $ xs
+        !arr = listArray (0,l) . L.sortOn fst $ xs
         !k = unsafeAt arr 0
         !m = unsafeAt arr l
 {-# INLINE getBFstL' #-}
@@ -123,6 +133,6 @@ to check this constraint before or provide its correctness by design.
 -}
 listArrSortedByFst :: Ord a => [(a,b)] -> Array Int (a,b)
 listArrSortedByFst xs = listArray (0,l - 1) ys
-  where !ys = L.sortBy (comparing fst) xs
+  where !ys = L.sortOn fst xs
         !l = length ys
 {-# INLINE listArrSortedByFst #-}
